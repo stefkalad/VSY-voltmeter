@@ -128,7 +128,7 @@ unsigned int measureVoltage(int source){
 
 
 	//STEP 02 CONNECT REFERENCE
-	// -let integrator to go to + voltages
+	// -let integrator to go to - voltages
 	pinON(MUX_PIN_A0);
 	pinOFF(MUX_PIN_A1);
 	delay_ms2(DELAY_SETUP);
@@ -147,8 +147,8 @@ unsigned int measureVoltage(int source){
 		pinOFF(MUX_PIN_A0);
 		pinOFF(MUX_PIN_A1);
 	}
-	//wait until it cross zero
-	while (GPIOA->IDR & (0x1 << INPUT_PIN));
+	//wait until it cross zero - becomes 1
+	while (!(GPIOA->IDR & (0x1 << INPUT_PIN)));
 	delay_ms2(DELAY_T1);
 
 
@@ -159,7 +159,7 @@ unsigned int measureVoltage(int source){
 
 
 	TIM2->CNT = 0u;
-	while (!(GPIOA->IDR & (0x1 << INPUT_PIN)));
+	while (GPIOA->IDR & (0x1 << INPUT_PIN));
 	uint32_t tx_us = TIM2->CNT;
 	printf("DEBUG: %u measured KM %u\r\n",tx_us, KM);
 
