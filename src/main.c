@@ -7,10 +7,10 @@
 
 
 
-#define INPUT_PIN  		 6
+#define INPUT_PIN  		 9	//PA9
 #define LED_PIN_INNER 	 5
-#define MUX_PIN_A0  	 0
-#define MUX_PIN_A1  	 1
+#define MUX_PIN_A0  	 0	//PA0
+#define MUX_PIN_A1  	 1	//PA1
 #define LED_PIN_RESTART  4
 
 
@@ -64,6 +64,34 @@ void pinON(int pinNumber){
 }
 void pinOFF(int pinNumber){
 	GPIOA-> BSRR |= (0x1 << (pinNumber + 16));
+}
+
+void pinMuxON(int pinNumber){
+	if (pinNumber == 0){
+		//set OC1M to 101 force 1
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_0);
+		TIM2->CCMR1 &= ~TIM_CCMR1_OC1M_1;
+	}
+
+	else if (pinNumber == 1){
+		//set OC2M to 101 force 1
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_0);
+		TIM2->CCMR1 &= ~TIM_CCMR1_OC2M_1;
+	}
+
+}
+void pinMuxOFF(int pinNumber){
+	if (pinNumber == 0){
+		//set OC1M to 100 force 0
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC1M_2);
+		TIM2->CCMR1 &= (~TIM_CCMR1_OC1M_1 & ~TIM_CCMR1_OC1M_0);
+	}
+
+	else if (pinNumber == 1){
+		//set OC2M to 100 force 0
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC2M_2);
+		TIM2->CCMR1 &= (~TIM_CCMR1_OC2M_1 & ~TIM_CCMR1_OC2M_0);
+	}
 }
 
 char getChar(){
@@ -121,16 +149,16 @@ unsigned int measureVoltage(int source){
 
 	//STEP 01 CONNECT FEEDBACK
 	// -let integrator to go near Up
-	pinON(MUX_PIN_A0);
-	pinON(MUX_PIN_A1);
+	pinMuxON(MUX_PIN_A0);
+	pinMuxON(MUX_PIN_A1);
 	delay_ms2(DELAY_FEEDBACK);
 	TIM2->CR1 &= ~TIM_CR1_CEN;
 
 
 	//STEP 02 CONNECT REFERENCE
 	// -let integrator to go to + voltages
-	pinON(MUX_PIN_A0);
-	pinOFF(MUX_PIN_A1);
+	pinMuxON(MUX_PIN_A0);
+	pinMuxOFF(MUX_PIN_A1);
 	delay_ms2(DELAY_SETUP);
 	TIM2->CR1 &= ~TIM_CR1_CEN;
 
@@ -140,13 +168,20 @@ unsigned int measureVoltage(int source){
 
 	//SELECT THE INPUT
 	if (source == 0){
-		pinOFF(MUX_PIN_A0);
-		pinON(MUX_PIN_A1);
+		pinMuxOFF(MUX_PIN_A0);
+		pinMuxON(MUX_PIN_A1);
 	}
 	else if (source == 1){
-		pinOFF(MUX_PIN_A0);
-		pinOFF(MUX_PIN_A1);
+		pinMuxOFF(MUX_PIN_A0);
+		pinMuxOFF(MUX_PIN_A1);
 	}
+
+	//set output-compare
+	TIM2->CCMR1 |=  TIM_CCMR1_OC1M_0; //set OC1M to 001 active on match
+	TIM2->CCMR1 &=  (~TIM_CCMR1_OC1M_1 & ~TIM_CCMR1_OC1M_2);
+	TIM2->CCMR1 |=  TIM_CCMR1_OC2M_1; //set OC1M to 010 inactive on match
+	TIM2->CCMR1 &=  (~TIM_CCMR1_OC2M_0 & ~TIM_CCMR1_OC2M_2);
+
 	//wait until it cross zero
 	while (GPIOA->IDR & (0x1 << INPUT_PIN));
 	delay_ms2(DELAY_T1);
@@ -154,13 +189,15 @@ unsigned int measureVoltage(int source){
 
 	//STEP 04 CONNECT REFERENCE
 	// -let integrator to go from negative to positive and measure time
-	pinON(MUX_PIN_A0);
-	pinOFF(MUX_PIN_A1);
+	//pinON(MUX_PIN_A0);
+	//pinOFF(MUX_PIN_A1);
 
 
-	TIM2->CNT = 0u;
+	//TIM2->CNT = 0u;
 	while (!(GPIOA->IDR & (0x1 << INPUT_PIN)));
+	TIM2->CR1 &= ~TIM_CR1_CEN;
 	uint32_t tx_us = TIM2->CNT;
+
 	printf("DEBUG: %u measured KM %u\r\n",tx_us, KM);
 
 
@@ -334,15 +371,23 @@ void gpio_init(void)
 
 	//Define MUX pins and Led pin
 	GPIOA-> MODER |= (0x1 << LED_PIN_INNER * 2);
-	GPIOA-> MODER |= (0x1 << MUX_PIN_A0 * 2);
-	GPIOA-> MODER |= (0x1 << MUX_PIN_A1 * 2);
+	//GPIOA-> MODER |= (0x1 << MUX_PIN_A0 * 2);
+	//GPIOA-> MODER |= (0x1 << MUX_PIN_A1 * 2);
 
+
+	//Define mux pins
+	GPIOA-> MODER |= (0x2 << MUX_PIN_A0 * 2);
+	GPIOA-> MODER |= (0x2 << MUX_PIN_A1 * 2);
+	GPIOA-> AFR[0] |= (0x1 << MUX_PIN_A0 * 4); //AF1 -TIM2_CH1 for mux pin
+	GPIOA-> AFR[0] |= (0x1 << MUX_PIN_A1 * 4); //AF1 -TIM2_CH2 for mux pin
+	GPIOA-> OSPEEDR |= (0x3 << MUX_PIN_A0 * 2);
+	GPIOA-> OSPEEDR |= (0x3 << MUX_PIN_A1 * 2);
+
+
+	//Define input pin
+	//GPIOA-> MODER |= (2 << INPUT_PIN * 2);
+	//GPIOA-> AFR[0] |= (10 << INPUT_PIN * 4); //AF10 -TIM2_CH3 for input pin
 	GPIOA-> PUPDR |= (0x2 << INPUT_PIN *2);
-
-	//Define timer pins
-	//GPIOA->MODER |= (2 << GPIO_MODER_MODER5_Pos);
-	/* Select the alternate function to AF1 -> TIM2_CH1 */
-	//GPIOA->AFR[0] |= (1 << GPIO_AFRL_AFRL5_Pos);
 
 
 	//Define USART pins
@@ -376,9 +421,28 @@ void time2_init(void)
 	//TIM2->CCR1 = TIMER_CCR1;
 	TIM2->PSC = 7;
 	TIM2->ARR = 65535;
-	TIM2->EGR |= TIM_EGR_UG;
-	TIM2->DIER = TIM_DIER_UIE;
-	TIM2->SR &= ~TIM_SR_UIF; //clear uif flag
+	TIM2->SR &= ~TIM_SR_UIF; 	//clear uif flag
+	//TIM2->SMCR = 0x55;			//set SMS to Slave gated mode and TS to Filtered Timer Input
+
+
+	TIM2->CCMR1 &= (~TIM_CCMR1_OC1CE & ~TIM_CCMR1_OC1PE & ~TIM_CCMR1_OC1FE); //clear bits
+	//TIM2->CCMR1 |=  TIM_CCMR1_OC1M_0; //set OC1M to 001 active on match
+
+	TIM2->CCMR1 &= (~TIM_CCMR1_OC2CE & ~TIM_CCMR1_OC2PE & ~TIM_CCMR1_OC2FE); //clear bits
+	//TIM2->CCMR1 |=  TIM_CCMR1_OC2M_1; //set OC1M to 010 inactive on match
+
+
+	//enable mux pins TIM2_CH1 and TIM2_CH2 in output capture compare mode
+	TIM2->CCER = (TIM_CCER_CC1E | TIM_CCER_CC2E);
+	//set the compare level
+	TIM2-> CCR1 = 0;
+	TIM2-> CCR2 = 0;
+
+	//TIM2->CR1 = TIM_CR1_CEN;
+
+	//TIM2->EGR |= TIM_EGR_UG;
+	//TIM2->DIER = TIM_DIER_UIE;
+
 
 
 
@@ -386,7 +450,7 @@ void time2_init(void)
 }
 
 /**
- * Procedure for initializing the USART2.
+ * Procedure for initializing the USART2
  */
 void usart_init(void)
 {
