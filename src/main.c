@@ -1,22 +1,23 @@
 
 #include <stdint.h>
-#include  <errno.h>
 #include <stm32f303xe_DIFF.h>
 #include  <sys/unistd.h> // STDOUT_FILENO, STDERR_FILENO
 
+#include "tiny_printf.h"
 
 
+//TIMER SETTINGS
 
-#define INPUT_PIN  		 6
-#define LED_PIN_INNER 	 5
-#define MUX_PIN_A0  	 0
-#define MUX_PIN_A1  	 1
-#define LED_PIN_RESTART  4
+#define INPUT_PIN  		 0	//PA0
+#define LED_PIN_INNER 	 5	//PA5
+#define MUX_PIN_A0  	 9	//PA9
+#define MUX_PIN_A1  	 1	//PA1
+
 
 
 
 #define DELAY_FEEDBACK  50 //(ms)
-#define DELAY_SETUP 	1  //(ms)
+#define DELAY_SETUP 	3  //(ms)
 #define DELAY_T1		20 //(ms)
 
 
@@ -43,7 +44,6 @@ int _write(int file, char *data, int len)
 
    if ((file != STDOUT_FILENO) && (file != STDERR_FILENO))
    {
-      errno = EBADF;
       return -1;
    }
    for (int i = 0; i< len; i++){
@@ -66,13 +66,40 @@ void pinOFF(int pinNumber){
 	GPIOA-> BSRR |= (0x1 << (pinNumber + 16));
 }
 
+void pinMuxON(int pinNumber){
+	if (pinNumber ==  MUX_PIN_A0 ){
+		//set OC3M to 101 force 1
+		TIM2->CCMR2 &= ~TIM_CCMR2_OC3M;
+		TIM2->CCMR2 |=  (TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3M_0);
+	}
+
+	else if (pinNumber ==  MUX_PIN_A1 ){
+		//set OC2M to 101 force 1
+		TIM2->CCMR1 &= ~TIM_CCMR1_OC2M;
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_0);
+	}
+
+}
+void pinMuxOFF(int pinNumber){
+	if (pinNumber ==  MUX_PIN_A0 ){
+		//set OC1M to 100 force 0
+		TIM2->CCMR2 &= ~TIM_CCMR2_OC3M;
+		TIM2->CCMR2 |=  (TIM_CCMR2_OC3M_2);
+	}
+
+	else if (pinNumber ==  MUX_PIN_A1){
+		//set OC2M to 100 force 0
+		TIM2->CCMR1 &= ~TIM_CCMR1_OC2M;
+		TIM2->CCMR1 |=  (TIM_CCMR1_OC2M_2);
+	}
+}
+
 char getChar(){
 
 	 while ((USART2->ISR & USART_ISR_RXNE) == 0);
 	 return USART2->RDR;
 
 }
-
 void putChar(char c){
 	 while ((USART2->ISR & USART_ISR_TXE) == 0);
 	 USART2->TDR = (uint16_t) c;
@@ -80,9 +107,9 @@ void putChar(char c){
 }
 
 void delay(int cycles){
+	cycles *= 1000;
 	while (cycles-- > 0);
 }
-
 void delay_ms2(unsigned int ms){
 
 	//clock run one one us
@@ -95,18 +122,6 @@ void delay_ms2(unsigned int ms){
 
 
 }
-void delay_ms(unsigned int ms){
-
-	//uint32_t cnt = ms * 8000;
-	uint32_t cnt = ms * 1000;
-
-	TIM2->CNT = 0u;
-	while (TIM2->CNT < cnt);
-	unsigned int temp = TIM2->CNT;
-		printf("DEBUG: CNT %u \r\n", temp);
-
-}
-
 
 
 unsigned int calculateVx(unsigned int measuredTx_us){
@@ -121,50 +136,59 @@ unsigned int measureVoltage(int source){
 
 	//STEP 01 CONNECT FEEDBACK
 	// -let integrator to go near Up
-	pinON(MUX_PIN_A0);
-	pinON(MUX_PIN_A1);
-	delay_ms2(DELAY_FEEDBACK);
-	TIM2->CR1 &= ~TIM_CR1_CEN;
+	pinMuxON(MUX_PIN_A0);
+	pinMuxON(MUX_PIN_A1);
+	delay(DELAY_FEEDBACK);
 
 
 	//STEP 02 CONNECT REFERENCE
-	// -let integrator to go to - voltages
-	pinON(MUX_PIN_A0);
-	pinOFF(MUX_PIN_A1);
-	delay_ms2(DELAY_SETUP);
-	TIM2->CR1 &= ~TIM_CR1_CEN;
+	// -let integrator to go to + voltages
+	pinMuxON(MUX_PIN_A0);
+	pinMuxOFF(MUX_PIN_A1);
+	delay(DELAY_SETUP);
 
 
 	//STEP 03 CONNECT SOURCE/GROUND
 	//-let integrator to go to - voltages
+	//wait until it cross zero
 
-	//SELECT THE INPUT
+	//set timer to count T1 ms
+	TIM2->CNT = 65535 - (int)DELAY_T1 * 1000;
+	TIM2->SR &= ~TIM_SR_UIF;
+	TIM2->CR1 |= TIM_CR1_CEN;
+
+	//select the input and set the output compare
 	if (source == 0){
-		pinOFF(MUX_PIN_A0);
-		pinON(MUX_PIN_A1);
+		pinMuxOFF(MUX_PIN_A0);
+		pinMuxON(MUX_PIN_A1);
+
+		//set OC3M to 011 to toggle go to  A0=1
+		TIM2->CCMR2 &= ~TIM_CCMR2_OC3M;
+		TIM2->CCMR2 |= (TIM_CCMR2_OC3M_0 | TIM_CCMR2_OC3M_1);
+
+		//set OC1M to 011 to toggle go to  A1=0
+		TIM2->CCMR1 &= ~TIM_CCMR1_OC2M;
+		TIM2->CCMR1 |= (TIM_CCMR1_OC2M_0 | TIM_CCMR1_OC2M_1);
+
 	}
 	else if (source == 1){
-		pinOFF(MUX_PIN_A0);
-		pinOFF(MUX_PIN_A1);
+		pinMuxOFF(MUX_PIN_A0);
+		pinMuxOFF(MUX_PIN_A1);
+
+		//set OC3M to 011 to toggle go to  A0=1
+		TIM2->CCMR2 &= ~TIM_CCMR2_OC3M;
+		TIM2->CCMR2 |= (TIM_CCMR2_OC3M_0 | TIM_CCMR2_OC3M_1);
 	}
-	//wait until it cross zero - becomes 1
-	while (!(GPIOA->IDR & (0x1 << INPUT_PIN)));
-	delay_ms2(DELAY_T1);
 
 
-	//STEP 04 CONNECT REFERENCE
-	// -let integrator to go from negative to positive and measure time
-	pinON(MUX_PIN_A0);
-	pinOFF(MUX_PIN_A1);
+	//wait until UIF is set -- indicates the counter overflow
+	while (!(TIM2->SR & TIM_SR_UIF));
 
-
-	TIM2->CNT = 0u;
-	while (GPIOA->IDR & (0x1 << INPUT_PIN));
-	uint32_t tx_us = TIM2->CNT;
+	//wait until the input gets negative (counter is stopped by HW)
+	while (GPIOA->IDR & (0x1 << INPUT_PIN)); //wait until get 0
+	TIM2->CR1 &= ~TIM_CR1_CEN;
+	unsigned int tx_us = TIM2->CNT;
 	printf("DEBUG: %u measured KM %u\r\n",tx_us, KM);
-
-
-
 
 	//STEP 05 RETURN TX
 	return tx_us;
@@ -204,12 +228,12 @@ void calibrate(){
 
 		inputBuffer[counter -1] = '\0';
 
-	}while((vxReal = myAtoi(inputBuffer)) == -1);
+	}while((vxReal = ts_atoi(inputBuffer)) == -1);
 
 	unsigned int formerKM = KM;
 	unsigned int vx = calculateVx(measureVoltage(1));
 
-	KM = (KM * vxReal)/vx;
+	KM = (KM * vxReal)/(vx/1000);
 	printf("Multiplicative constant KM, former %u, now %u\r\n\n", formerKM, KM);
 
 }
@@ -224,7 +248,7 @@ void sample(){
 		inputBuffer[0] = getChar();
 		putChar(inputBuffer[0]);
 		printf("\r\n");
-	}while((samples = myAtoi(inputBuffer)) == -1);
+	}while((samples = ts_atoi(inputBuffer)) == -1);
 
 	unsigned int vxSum = 0;
 	for (int i = 0; i < samples; i++){
@@ -247,17 +271,10 @@ int main(void)
 	gpio_init();
 	usart_init();
 	time2_init();
-	for (int i = 0; i < 0; i++){
-		pinON(LED_PIN_INNER);
-		delay_ms(1000);
-		pinOFF(LED_PIN_INNER);
-		delay_ms(1000);
-	}
-	printf("-------------------WELCOME TO VOLTMETER INTERFACE-------------------\r\n");
+
+
+	printf("-------------------VOLTMETER -------------------\r\n");
 	printf("To start measurment please type M to terminal!\r\n\n");
-
-
-
 
 
 	while (1) {
@@ -305,15 +322,13 @@ void rcc_init(void)
 	RCC->CR |= RCC_CR_HSEON;
 
 	/* Wait until the HSE clock is ready. */
-	while ((RCC->CR & RCC_CR_HSERDY) == 0)
-		;
+	while ((RCC->CR & RCC_CR_HSERDY) == 0);
 
 	/* Switch the main clock to the HSE clock source. */
 	RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW) | RCC_CFGR_SW_HSE;
 
 	/* Wait until the clock source is switched to HSE. */
-	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE)
-		;
+	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
 
 	/* Optionally turn off the HSI oscillator to save the power. */
 	RCC->CR &= ~RCC_CR_HSION;
@@ -333,16 +348,24 @@ void gpio_init(void)
 
 
 	//Define MUX pins and Led pin
-	GPIOA-> MODER |= (0x1 << LED_PIN_INNER * 2);
-	GPIOA-> MODER |= (0x1 << MUX_PIN_A0 * 2);
-	GPIOA-> MODER |= (0x1 << MUX_PIN_A1 * 2);
+	GPIOA-> MODER |= (1 << LED_PIN_INNER * 2);
+	//GPIOA-> MODER |= (0x1 << MUX_PIN_A0 * 2);
+	//GPIOA-> MODER |= (0x1 << MUX_PIN_A1 * 2);
 
-	GPIOA-> PUPDR |= (0x2 << INPUT_PIN *2);
 
-	//Define timer pins
-	//GPIOA->MODER |= (2 << GPIO_MODER_MODER5_Pos);
-	/* Select the alternate function to AF1 -> TIM2_CH1 */
-	//GPIOA->AFR[0] |= (1 << GPIO_AFRL_AFRL5_Pos);
+	//Define mux pins
+	GPIOA-> MODER |= (2 << MUX_PIN_A0 * 2);
+	GPIOA-> MODER |= (2 << MUX_PIN_A1 * 2);
+	GPIOA-> AFR[1] |= (10<< (MUX_PIN_A0-8) * 4); 	//AF1 -TIM2_CH1 for mux pin
+	GPIOA-> AFR[0] |= (1 << MUX_PIN_A1 * 4); 		//AF1 -TIM2_CH2 for mux pin
+	GPIOA-> OSPEEDR |= (3 << MUX_PIN_A0 * 2);
+	GPIOA-> OSPEEDR |= (3 << MUX_PIN_A1 * 2);
+
+
+	//Define input pin
+	GPIOA-> MODER |= (2 << INPUT_PIN * 2);
+	GPIOA-> AFR[0] |= (1 << INPUT_PIN * 4); //AF10 -TIM2_CH3 for input pin
+	GPIOA-> PUPDR |= (2 << INPUT_PIN *2);
 
 
 	//Define USART pins
@@ -356,29 +379,37 @@ void gpio_init(void)
 
 void time2_init(void)
 {
-	/* Enable the clock for the timer. Note that the timer is located at APB1
-	 * domain, but there is an internal multiplier x2 which is active when the
-	 * APB1 prescaler is higher than x1. Thus the TIM2 clock is 72MHz in our
-	 * case */
+	/* General purpose TIM2 is used
+	 * TIM2CH1 is used with INPUT_PIN in triggered gated mode - AF1
+	 * TIM2CH2 is used with MUX_PIN_A0 in output compare mode - AF10
+	 * TIM2CH3 is used with MUX_PIN_A1 in output compare mode - AF1
+	 */
+	//enable TIM2 clock
 	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 
-	/* Configure the channel 1 into PWM mode 1 */
-
-	//TIM2->CCMR1 |= (6 << TIM_CCMR1_OC1M_Pos);
-	/* Enable the channel 1 output */
-	//TIM2->CCER |= TIM_CCER_CC1E;
-
-
-	/* Set the timer auto-reload value to 10000 -> the timer period will be 1Hz */
-	//TIM2->ARR = (uint32_t)0xFFFFFFFFU;
-
-	/* Set the channel 1 capture/compare to 5000 -> dutycycle is 0.5 */
-	//TIM2->CCR1 = TIMER_CCR1;
+	//set TIM2 prescaler
 	TIM2->PSC = 7;
+	//set TIM2 CNT overflow
 	TIM2->ARR = 65535;
-	TIM2->EGR |= TIM_EGR_UG;
-	TIM2->DIER = TIM_DIER_UIE;
-	TIM2->SR &= ~TIM_SR_UIF; //clear uif flag
+	//set input trigger: SMS - Slave gated mode and TS to Filtered Timer Input
+	TIM2->SMCR = 0x55;
+
+
+	//enable mux pins TIM2_CH2 and TIM2_CH3 in output capture compare mode
+	TIM2->CCER |= (TIM_CCER_CC2E | TIM_CCER_CC3E);
+
+	//set the compare level
+	TIM2-> CCR2 = 0;
+	TIM2-> CCR3 = 0;
+
+	//clear output compare mode bits (it should be cleared by default)
+	TIM2->CCMR1 &= (~TIM_CCMR1_OC2CE & ~TIM_CCMR1_OC2PE & ~TIM_CCMR1_OC2FE); //clear bits
+	TIM2->CCMR2 &= (~TIM_CCMR2_OC3CE & ~TIM_CCMR2_OC3PE & ~TIM_CCMR2_OC3FE); //clear bits
+
+
+	//TIM2->EGR |= TIM_EGR_UG;
+	//TIM2->DIER = TIM_DIER_UIE;
+
 
 
 
@@ -386,7 +417,7 @@ void time2_init(void)
 }
 
 /**
- * Procedure for initializing the USART2.
+ * Procedure for initializing the USART2
  */
 void usart_init(void)
 {
